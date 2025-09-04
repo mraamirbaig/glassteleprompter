@@ -67,6 +67,7 @@ class BleManager: ObservableObject {
         DispatchQueue.main.async {
             self.isScanning = true
             self.isConnecting = false
+            self.pairedGlasses = []
         }
         
 //        // Prevent duplicate scans
@@ -525,38 +526,140 @@ extension BleManager {
     }
     
 
-    func _sendBmpData(_ bmpData: Data) async -> Bool {
-
-        let initialSeq = 0
-//        let _ = await Proto.sendHeartBeat()
-//        print("\(Date()) testBMP -------startSendBeatHeart----isSuccess---\(isSuccess)------")
+//    func _sendBmpData(_ bmpData: Data) async -> Bool {
 //
+//        let initialSeq = 0
+////        let _ = await Proto.sendHeartBeat()
+////        print("\(Date()) testBMP -------startSendBeatHeart----isSuccess---\(isSuccess)------")
+////
+//        await BleManager.shared.startSendBeatHeart(sendImmediately: false)
+//
+//        async let leftResult = updateBmp(lr: GlassLensSide.Left, image: bmpData, seq: initialSeq)
+//        async let rightResult = updateBmp(lr: GlassLensSide.Right, image: bmpData, seq: initialSeq)
+//        let results = await [leftResult, rightResult]
+////        let leftResult = await updateBmp(lr: GlassLensSide.Left, image: bmpData, seq: initialSeq)
+////        let rightResult = await updateBmp(lr: GlassLensSide.Right, image: bmpData, seq: initialSeq)
+////
+////        let results = [leftResult, rightResult]
+//
+//        let successL = results[0]
+//        let successR = results[1]
+//
+//        if successL {
+//            print("\(Date()) left ble success")
+//        } else {
+//            print("\(Date()) left ble fail")
+//        }
+//
+//        if successR {
+//            print("\(Date()) right ble success")
+//        } else {
+//            print("\(Date()) right ble fail")
+//        }
+//        return successL && successR
+//    }
+    
+    func _sendBmpData(_ bmpData: Data) async -> Bool {
         await BleManager.shared.startSendBeatHeart(sendImmediately: false)
 
-        async let leftResult = updateBmp(lr: GlassLensSide.Left, image: bmpData, seq: initialSeq)
-        async let rightResult = updateBmp(lr: GlassLensSide.Right, image: bmpData, seq: initialSeq)
-        let results = await [leftResult, rightResult]
-//        let leftResult = await updateBmp(lr: GlassLensSide.Left, image: bmpData, seq: initialSeq)
-//        let rightResult = await updateBmp(lr: GlassLensSide.Right, image: bmpData, seq: initialSeq)
-//
-//        let results = [leftResult, rightResult]
+        // Phase 1: Send packets to both in parallel
+        async let leftSend = sendBmpPackets(lr: .Left, image: bmpData)
+        async let rightSend = sendBmpPackets(lr: .Right, image: bmpData)
+        let sendResults = await [leftSend, rightSend]
 
-        let successL = results[0]
-        let successR = results[1]
-
-        if successL {
-            print("\(Date()) left ble success")
-        } else {
-            print("\(Date()) left ble fail")
+        guard sendResults[0], sendResults[1] else {
+            print("Packet sending failed on one side")
+            return false
         }
 
-        if successR {
-            print("\(Date()) right ble success")
-        } else {
-            print("\(Date()) right ble fail")
-        }
+        // Phase 2: Only after both sides done, run final confirmation
+        async let leftConfirm = finalizeBmp(lr: .Left, image: bmpData)
+        async let rightConfirm = finalizeBmp(lr: .Right, image: bmpData)
+        let confirmResults = await [leftConfirm, rightConfirm]
+
+        let successL = confirmResults[0]
+        let successR = confirmResults[1]
+
+        if successL { print("Left confirmation success") } else { print("Left confirmation failed") }
+        if successR { print("Right confirmation success") } else { print("Right confirmation failed") }
+
         return successL && successR
     }
+    
+    // Phase 1: Only send BMP packets (no finish/CRC yet)
+    private func sendBmpPackets(lr: GlassLensSide, image: Data, seq: Int? = nil) async -> Bool {
+        func isOldSendPackError(currentSeq: Int?) -> Bool {
+            let oldSendError = (seq == nil && currentSeq != nil)
+            if oldSendError {
+                print("BmpUpdate -> sendBmpPackets: old pack send error, seq = \(currentSeq!)")
+            }
+            return oldSendError
+        }
+
+        let packLen = 194
+        var multiPacks: [Data] = []
+        var i = 0
+        while i < image.count {
+            let end = min(i + packLen, image.count)
+            let singlePack = image.subdata(in: i..<end)
+            multiPacks.append(singlePack)
+            i += packLen
+        }
+
+        print("BmpUpdate -> sendBmpPackets: start sending \(multiPacks.count) packs")
+
+        for index in 0..<multiPacks.count {
+            if isOldSendPackError(currentSeq: seq) { return false }
+            if let seqVal = seq, index < seqVal { continue }
+
+            let pack = multiPacks[index]
+            let prefix: [UInt8] = index == 0 ? [0x15, UInt8(index & 0xff), 0x00, 0x1c, 0x00, 0x00]
+                                             : [0x15, UInt8(index & 0xff)]
+            let data = prefix + pack
+
+            BluetoothManager.shared.writeData(writeData: Data(data), lr: lr)
+
+    #if os(iOS)
+            try? await Task.sleep(nanoseconds: 8_000_000)
+    #else
+            try? await Task.sleep(nanoseconds: 5_000_000)
+    #endif
+        }
+
+        print("BmpUpdate -> sendBmpPackets finished for \(lr)")
+        return true
+    }
+
+    
+    private func finalizeBmp(lr: GlassLensSide, image: Data) async -> Bool {
+        var currentRetryTime = 0
+        let maxRetryTime = 10
+
+        func finishUpdate() async -> Bool {
+            if currentRetryTime >= maxRetryTime {
+                return false
+            }
+
+            let ret = await BleManager.shared.request(Data([0x20, 0x0d, 0x0e]), lr: lr, timeoutMs: 5000)
+            if ret.isTimeout {
+                currentRetryTime += 1
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                return await finishUpdate()
+            }
+            return ret.data.count > 1 && ret.data[1] == 0xc9
+        }
+
+        let isSuccess = await finishUpdate()
+        guard isSuccess else { return false }
+
+        let result = prependAddress(image: image)
+        let crc = calculateCRC32(data: result)
+
+        let ret = await BleManager.shared.request(Data([0x16] + crc), lr: lr, timeoutMs: 5000)
+
+        return ret.data.count > 5 && ret.data[5] == 0xCA
+    }
+    
     
     func clearGlasses() async -> Bool {
         print("send exit all func")
@@ -585,101 +688,101 @@ extension BleManager {
         }
     }
     
-    private func updateBmp(lr: GlassLensSide, image: Data, seq: Int? = nil) async -> Bool {
-
-        func isOldSendPackError(currentSeq: Int?) -> Bool {
-            let oldSendError = (seq == nil && currentSeq != nil)
-            if oldSendError {
-                print("BmpUpdate -> updateBmp: old pack send error, seq = \(currentSeq!)")
-            }
-            return oldSendError
-        }
-
-        let packLen = 194
-        var multiPacks: [Data] = []
-        var i = 0
-        while i < image.count {
-            let end = min(i + packLen, image.count)
-            let singlePack = image.subdata(in: i..<end)
-            multiPacks.append(singlePack)
-            i += packLen
-        }
-
-        print("BmpUpdate -> updateBmp: start sending \(multiPacks.count) packs")
-
-        for index in 0..<multiPacks.count {
-            if isOldSendPackError(currentSeq: seq) { return false }
-            if let seqVal = seq, index < seqVal { continue }
-
-            let pack = multiPacks[index]
-            let prefix: [UInt8] = index == 0 ? [0x15, UInt8(index & 0xff), 0x00, 0x1c, 0x00, 0x00] : [0x15, UInt8(index & 0xff)]
-            let data = prefix + pack
-
-            print("\(Date()) updateBmp----data---*\(data.count)---*\(data)----------")
-
-            BluetoothManager.shared.writeData(writeData: Data(data), lr: lr)
-
-#if os(iOS)
-            try? await Task.sleep(nanoseconds: 8_000_000)
-#else
-            try? await Task.sleep(nanoseconds: 5_000_000)
-#endif
-
-            var offset = index * packLen
-            if offset > image.count - packLen {
-                offset = image.count - pack.count
-            }
-            //_onProgressCall(lr: lr, offset: offset, index: index, total: image.count)
-        }
-
-        if isOldSendPackError(currentSeq: seq) { return false }
-
-        var currentRetryTime = 0
-        let maxRetryTime = 10
-
-        func finishUpdate() async -> Bool {
-            print("\(Date()) finishUpdate----currentRetryTime-----\(currentRetryTime)-----maxRetryTime-----\(maxRetryTime)--")
-            if currentRetryTime >= maxRetryTime {
-                return false
-            }
-
-            let ret = await BleManager.shared.request(Data([0x20, 0x0d, 0x0e]), lr: lr, timeoutMs: 5000)
-            print("\(Date()) finishUpdate---lr---\(lr)--ret----\(ret.data)-----")
-            if ret.isTimeout {
-                currentRetryTime += 1
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                return await finishUpdate()
-            }
-            return ret.data.count > 1 && ret.data[1] == 0xc9
-        }
-
-        print("\(Date()) updateBmp-------------over------")
-
-        let isSuccess = await finishUpdate()
-
-        print("\(Date()) finishUpdate--isSuccess----*\(isSuccess)-")
-        guard isSuccess else {
-            print("finishUpdate result error lr: \(lr)")
-            return false
-        }
-
-        print("finishUpdate result success lr: \(lr)")
-
-        let result = prependAddress(image: image)
-        let crc = calculateCRC32(data: result)
-
-        let ret = await BleManager.shared.request(Data([0x16] + crc), lr: lr, timeoutMs: 5000)
-
-        print("\(Date()) Crc32Xz---lr---\(lr)---ret--------\(ret.data)------crc----\(crc)--")
-
-        //if ret.data.count > 5 && ret.data[5] != 0xc9 {
-        if ret.data.count > 5 && ret.data[5] != 0xCA {
-            print("CRC checks failed...")
-            return false
-        }
-
-        return true
-    }
+//    private func updateBmp(lr: GlassLensSide, image: Data, seq: Int? = nil) async -> Bool {
+//
+//        func isOldSendPackError(currentSeq: Int?) -> Bool {
+//            let oldSendError = (seq == nil && currentSeq != nil)
+//            if oldSendError {
+//                print("BmpUpdate -> updateBmp: old pack send error, seq = \(currentSeq!)")
+//            }
+//            return oldSendError
+//        }
+//
+//        let packLen = 194
+//        var multiPacks: [Data] = []
+//        var i = 0
+//        while i < image.count {
+//            let end = min(i + packLen, image.count)
+//            let singlePack = image.subdata(in: i..<end)
+//            multiPacks.append(singlePack)
+//            i += packLen
+//        }
+//
+//        print("BmpUpdate -> updateBmp: start sending \(multiPacks.count) packs")
+//
+//        for index in 0..<multiPacks.count {
+//            if isOldSendPackError(currentSeq: seq) { return false }
+//            if let seqVal = seq, index < seqVal { continue }
+//
+//            let pack = multiPacks[index]
+//            let prefix: [UInt8] = index == 0 ? [0x15, UInt8(index & 0xff), 0x00, 0x1c, 0x00, 0x00] : [0x15, UInt8(index & 0xff)]
+//            let data = prefix + pack
+//
+//            print("\(Date()) updateBmp----data---*\(data.count)---*\(data)----------")
+//
+//            BluetoothManager.shared.writeData(writeData: Data(data), lr: lr)
+//
+//#if os(iOS)
+//            try? await Task.sleep(nanoseconds: 8_000_000)
+//#else
+//            try? await Task.sleep(nanoseconds: 5_000_000)
+//#endif
+//
+//            var offset = index * packLen
+//            if offset > image.count - packLen {
+//                offset = image.count - pack.count
+//            }
+//            //_onProgressCall(lr: lr, offset: offset, index: index, total: image.count)
+//        }
+//
+//        if isOldSendPackError(currentSeq: seq) { return false }
+//
+//        var currentRetryTime = 0
+//        let maxRetryTime = 10
+//
+//        func finishUpdate() async -> Bool {
+//            print("\(Date()) finishUpdate----currentRetryTime-----\(currentRetryTime)-----maxRetryTime-----\(maxRetryTime)--")
+//            if currentRetryTime >= maxRetryTime {
+//                return false
+//            }
+//
+//            let ret = await BleManager.shared.request(Data([0x20, 0x0d, 0x0e]), lr: lr, timeoutMs: 5000)
+//            print("\(Date()) finishUpdate---lr---\(lr)--ret----\(ret.data)-----")
+//            if ret.isTimeout {
+//                currentRetryTime += 1
+//                try? await Task.sleep(nanoseconds: 1_000_000_000)
+//                return await finishUpdate()
+//            }
+//            return ret.data.count > 1 && ret.data[1] == 0xc9
+//        }
+//
+//        print("\(Date()) updateBmp-------------over------")
+//
+//        let isSuccess = await finishUpdate()
+//
+//        print("\(Date()) finishUpdate--isSuccess----*\(isSuccess)-")
+//        guard isSuccess else {
+//            print("finishUpdate result error lr: \(lr)")
+//            return false
+//        }
+//
+//        print("finishUpdate result success lr: \(lr)")
+//
+//        let result = prependAddress(image: image)
+//        let crc = calculateCRC32(data: result)
+//
+//        let ret = await BleManager.shared.request(Data([0x16] + crc), lr: lr, timeoutMs: 5000)
+//
+//        print("\(Date()) Crc32Xz---lr---\(lr)---ret--------\(ret.data)------crc----\(crc)--")
+//
+//        //if ret.data.count > 5 && ret.data[5] != 0xc9 {
+//        if ret.data.count > 5 && ret.data[5] != 0xCA {
+//            print("CRC checks failed...")
+//            return false
+//        }
+//
+//        return true
+//    }
     
 //    private func _onProgressCall(lr: GlassLensSide, offset: Int, index: Int, total: Int) {
 //        let progress = (Double(offset) / Double(total)) * 100.0

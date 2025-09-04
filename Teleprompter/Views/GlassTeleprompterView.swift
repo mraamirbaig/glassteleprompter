@@ -11,6 +11,7 @@ import UserNotifications
 struct GlassTeleprompterView: View {
     
     @ObservedObject var controller: TeleprompterActionController
+    @ObservedObject var bleManager = BleManager.shared
     
     @Binding var selectedContent: ContentItem
     
@@ -172,7 +173,7 @@ struct GlassTeleprompterView: View {
                 await clearGlasses()
             }
         }
-        .onChange(of: BleManager.shared.connectedGlasses?.isConnected) { _, newValue in
+        .onChange(of: bleManager.connectedGlasses?.isConnected) { _, newValue in
 //            if newValue == true {
 //                print("Connected again after disconnect")
 //                Task {

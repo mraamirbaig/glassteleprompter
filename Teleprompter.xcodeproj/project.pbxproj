@@ -533,7 +533,7 @@
 				CODE_SIGN_ENTITLEMENTS = Teleprompter/Teleprompter.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_ASSET_PATHS = "\"Teleprompter/Preview Content\"";
@@ -586,7 +586,7 @@
 				CODE_SIGN_ENTITLEMENTS = Teleprompter/Teleprompter.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Teleprompter/Preview Content\"";
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -729,7 +729,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TeleprompterWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TeleprompterWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = TeleprompterWidget;
@@ -762,7 +762,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TeleprompterWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TeleprompterWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = TeleprompterWidget;
